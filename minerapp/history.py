@@ -17,7 +17,8 @@ from .paths import DATA
 
 HIST = DATA / "history"
 TOTALS = DATA / "totals.json"
-FIELDS = ["ts", "coin", "power_w", "temp_c", "fan", "hashrate", "usd", "kwh", "cpu_usd"]
+FIELDS = ["ts", "coin", "power_w", "temp_c", "fan", "hashrate", "usd", "kwh",
+          "cpu_usd", "cpu_remote_usd"]
 KEEP_MONTHS = 12
 
 
@@ -26,7 +27,8 @@ def _month_path(ts: float) -> Path:
 
 
 def append(ts: float, coin: str, power_w: float, temp_c: float | None, fan: float | None,
-           hashrate: float | None, usd: float, kwh: float, cpu_usd: float = 0.0) -> None:
+           hashrate: float | None, usd: float, kwh: float, cpu_usd: float = 0.0,
+           cpu_remote_usd: float = 0.0) -> None:
     HIST.mkdir(parents=True, exist_ok=True)
     path = _month_path(ts)
     new = not path.exists()
@@ -41,6 +43,7 @@ def append(ts: float, coin: str, power_w: float, temp_c: float | None, fan: floa
             "hashrate": f"{hashrate:.0f}" if hashrate else "",
             "usd": f"{usd:.9f}", "kwh": f"{kwh:.6f}",
             "cpu_usd": f"{cpu_usd:.9f}",
+            "cpu_remote_usd": f"{cpu_remote_usd:.9f}",
         })
 
 
@@ -84,6 +87,7 @@ def load(start: float | None = None, end: float | None = None) -> list[dict]:
                         "fan": _f(r.get("fan")), "hashrate": _f(r.get("hashrate")),
                         "usd": _f(r.get("usd")) or 0.0, "kwh": _f(r.get("kwh")) or 0.0,
                         "cpu_usd": _f(r.get("cpu_usd")) or 0.0,
+                        "cpu_remote_usd": _f(r.get("cpu_remote_usd")) or 0.0,
                     })
         except OSError:
             continue
@@ -116,7 +120,7 @@ def aggregate(rows: list[dict], step_s: int) -> list[dict]:
             bucket["tc"].append(r["temp_c"])
         if r["hashrate"]:
             bucket["hr"].append(r["hashrate"])
-        bucket["usd"] += r["usd"]
+        bucket["usd"] += r["usd"] + r["cpu_usd"] + r["cpu_remote_usd"]
         bucket["kwh"] += r["kwh"]
     out.append(_finish(bucket))
     return out
@@ -132,7 +136,7 @@ def _finish(b: dict) -> dict:
 
 def summary(rows: list[dict]) -> dict:
     """Итоги по диапазону: суммы и средние."""
-    usd = sum(r["usd"] for r in rows)
+    usd = sum(r["usd"] + r["cpu_usd"] + r["cpu_remote_usd"] for r in rows)
     kwh = sum(r["kwh"] for r in rows)
     pw = [r["power_w"] for r in rows if r["power_w"] is not None]
     tc = [r["temp_c"] for r in rows if r["temp_c"] is not None]

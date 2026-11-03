@@ -18,11 +18,23 @@ RATE_WINDOW_S = 600           # окно оценки «сейчас»
 class SessionMetrics:
     def __init__(self) -> None:
         self.started = time.time()
-        self.kwh = 0.0
-        self.usd = 0.0
+        self.kwh = 0.0            # GPU + локальный CPU (оценка по потокам)
+        self.usd = 0.0            # только GPU
+        self.cpu_usd = 0.0        # локальный CPU, по фактическому хешрейту
+        self.cpu_remote_usd = 0.0  # второй ПК, по фактическому хешрейту
+        self.cpu_remote_kwh = 0.0
         self._last_ts = self.started
         self._samples: dict[str, dict] = {}
         self._samples_ts = 0.0
+
+    @property
+    def total_usd(self) -> float:
+        """Доход сеанса по всем устройствам: GPU + CPU + второй ПК."""
+        return self.usd + self.cpu_usd + self.cpu_remote_usd
+
+    @property
+    def total_kwh(self) -> float:
+        return self.kwh + self.cpu_remote_kwh
 
     # --- доход -------------------------------------------------------------
     def _load_samples(self) -> None:

@@ -88,9 +88,9 @@ def main() -> int:
     check("подсказка у суток объясняет прогноз",
           "прогноз: текущий темп" in w.card_day.toolTip())
     # крупное число — прогноз от текущего темпа, мелкое — факт за период
-    gpu_h, cpu_h, _rel, _win = w._now_rates("pearl")
-    expect_hour = ui.fmt_rub(gpu_h + cpu_h)
-    expect_day = ui.fmt_rub((gpu_h + cpu_h) * 24)
+    gpu_h, cpu_h, remote_h, _rel, _win = w._now_rates("pearl")
+    expect_hour = ui.fmt_rub(gpu_h + cpu_h + remote_h)
+    expect_day = ui.fmt_rub((gpu_h + cpu_h + remote_h) * 24)
     out(f"темп сейчас {expect_hour}/ч → сутки {expect_day}")
     check("час = текущий темп", texts["час"] == expect_hour)
     check("сутки = 24 × текущий темп", texts["сутки"] == expect_day)
@@ -111,6 +111,7 @@ def main() -> int:
     # GPU и CPU раздельно в прогнозе
     day_tip = w.card_day.toolTip()
     check("в прогнозе есть GPU и CPU отдельно", "GPU " in day_tip and "CPU " in day_tip)
+    check("в прогнозе есть второе устройство", "PC2 " in day_tip)
 
     # «дёрганье» подсказок: повторный вызов не должен переставлять tooltip
     calls = []

@@ -364,7 +364,7 @@ class MainWindow(QMainWindow):
         self._auto_coin: str | None = None
         self._auto_net: dict = {}
         self._minute = self._blank_minute()
-        self._period_minutes: list[tuple[int, float, float, float]] = []
+        self._period_minutes: list[tuple[int, float, float, float, float]] = []
         self._sums: dict = {}       # суммы по периодам, пересчёт раз в минуту
         self._idle = False
         self._idle_s = 0.0
@@ -387,6 +387,7 @@ class MainWindow(QMainWindow):
         self._last_balance = ("—", "", "")
         self.rate_gpu = metrics.RateWindow()
         self.rate_cpu = metrics.RateWindow()
+        self.rate_remote = metrics.RateWindow()   # второй ПК (третье устройство)
         coin0 = self.app_cfg["gpu"].get("coin", "pearl")
         self._gpu_floor = self._hashrate_floor("pearl" if coin0 == "auto" else coin0)
 
@@ -532,9 +533,13 @@ class MainWindow(QMainWindow):
         outer.addLayout(head)
 
         sections = QHBoxLayout()
-        sections.setSpacing(8)
-        sections.addWidget(self._build_gpu())
-        sections.addWidget(self._build_cpu())
+        sections.setSpacing(6)
+        # Три устройства видны сразу, без вкладок: GPU и два CPU в колонках
+        # равной ширины. Второй ПК — только в персональном конфиге.
+        sections.addWidget(self._build_gpu(), 1)
+        sections.addWidget(self._build_cpu(), 1)
+        if (self.app_cfg.get("cpu_remote") or {}).get("enabled"):
+            sections.addWidget(self._build_cpu_remote(), 1)
         outer.addLayout(sections)
 
         self._build_system_row(outer)
@@ -602,26 +607,27 @@ class MainWindow(QMainWindow):
         outer.addLayout(row)
 
     def _build_gpu(self) -> QGroupBox:
-        g = QGroupBox("Видеокарта")
+        g = QGroupBox("Видеокарта · RTX 5070")
         lay = QGridLayout(g)
-        lay.setHorizontalSpacing(10)
-        lay.setVerticalSpacing(6)
+        lay.setContentsMargins(8, 2, 8, 6)
+        lay.setHorizontalSpacing(8)
+        lay.setVerticalSpacing(4)
+        lay.setColumnStretch(1, 1)
 
         self.chk_gpu = QCheckBox("Вкл")
         self.chk_gpu_auto = QCheckBox("автозапуск")
         self.cmb_coin = QComboBox()
-        self.cmb_coin.addItem("Авто (по доходности)", "auto")
+        self.cmb_coin.addItem("Авто (доходность)", "auto")
         self.cmb_coin.addItem("Pearl (PRL)", "pearl")
         self.cmb_coin.addItem("Quantus (QTC)", "quantus")
         idx = self.cmb_coin.findData(self.app_cfg["gpu"].get("coin", "pearl"))
         self.cmb_coin.setCurrentIndex(max(0, idx))
         top = QHBoxLayout()
+        top.setSpacing(6)
         top.addWidget(self.chk_gpu)
-        top.addSpacing(8)
         top.addWidget(self.chk_gpu_auto)
-        top.addSpacing(8)
-        top.addWidget(self.cmb_coin)
         top.addStretch(1)
+        top.addWidget(self.cmb_coin)
         lay.addLayout(top, 0, 0, 1, 2)
 
         self.spin_temp = NoWheelDoubleSpin()
@@ -631,7 +637,7 @@ class MainWindow(QMainWindow):
         self.spin_temp.setValue(float(self.app_cfg["gpu"].get("max_temp", 80)))
         self.spin_temp.setSuffix(" °C")
         self.spin_temp.setToolTip(
-            "Порог температуры, за которым приложение снижает лимит мощности (шаг 15 Вт "
+            "Порог температуры, за которым приложение снижает лимит мощности (шаг 10 Вт "
             "до 175) и, если не помогло, останавливает GPU.\n"
             "Аппаратный порог троттлинга NVML на GeForce не ставит "
             "(nvmlDeviceSetTemperatureThreshold → NVML_ERROR_NOT_SUPPORTED), поэтому "
@@ -670,7 +676,7 @@ class MainWindow(QMainWindow):
         # и меняет лимит мощности/обороты на ходу, а после выхода карта может
         # остаться на чужих настройках. Галочка оставлена как памятка, но
         # неактивна и всегда снята (значение gpu.night в конфиге тоже гасим).
-        self.chk_night = QCheckBox("Ночной режим: тихо (175 Вт, кулер 55%)")
+        self.chk_night = QCheckBox("Ночной режим: тихо (175 Вт, 55%)")
         self.chk_night.setToolTip(
             "Заблокировано: режим не включается. Он перезапускает майнер и меняет "
             "лимит мощности и обороты карты на ходу — проще задать «Лимит мощности» "
@@ -680,48 +686,51 @@ class MainWindow(QMainWindow):
         self.chk_night.setStyleSheet("QCheckBox:disabled{color:#6d7986;}")
         lay.addWidget(self.chk_night, 4, 0, 1, 2)
 
+        # Живые метрики в две строки: в колонке ~370 px одна строка не влезает,
+        # а обрезка QLabel съедала бы как раз хвост (МГц и хешрейт).
         self.lbl_gpu = QLabel("остановлен")
-        self.lbl_gpu.setStyleSheet("color:#4d9de0;font-family:Consolas;")
+        self.lbl_gpu.setStyleSheet("color:#4d9de0;font-family:Consolas;font-size:11px;")
+        self.lbl_gpu2 = QLabel("")
+        self.lbl_gpu2.setStyleSheet("color:#8fa3b8;font-family:Consolas;font-size:11px;")
         lay.addWidget(self.lbl_gpu, 5, 0, 1, 2)
+        lay.addWidget(self.lbl_gpu2, 6, 0, 1, 2)
         g.setLayout(lay)
         return g
 
     def _build_cpu(self) -> QGroupBox:
-        g = QGroupBox("Процессор")
+        """Локальный CPU — отдельной карточкой рядом с GPU, без вкладок."""
+        g = QGroupBox("Процессор · Ryzen 7 9800X3D")
+        self.cpu_tabs = None          # вкладок больше нет: три устройства видны сразу
+        lay = QGridLayout(g)
+        self._build_cpu_local(lay)
+        return g
+
+    def _build_cpu_remote(self) -> QGroupBox:
+        """Второй ПК — такой же карточкой в общем ряду (персональный модуль)."""
         rc = self.app_cfg.get("cpu_remote") or {}
-        self.cpu_tabs = None
-        self.remote_cpu = None
-        if not rc.get("enabled"):
-            lay = QGridLayout(g)
-            self._build_cpu_local(lay)
-            return g
-        # Второй ПК — вкладкой ВНУТРИ секции «Процессор»: окно не становится
-        # шире, а локальная карточка остаётся ровно такой же, как была.
+        label = str(rc.get("label") or "PC2")
+        g = QGroupBox(f"Процессор · {label}")
         outer = QVBoxLayout(g)
-        outer.setContentsMargins(0, 0, 0, 0)
-        page = QWidget()
-        local = QGridLayout(page)
-        local.setContentsMargins(6, 6, 6, 6)
-        self._build_cpu_local(local)
-        self.cpu_tabs = QTabWidget()
-        self.cpu_tabs.setDocumentMode(True)
-        self.cpu_tabs.addTab(page, "Этот ПК")
-        self.remote_cpu = remotecpu.RemoteCpuPanel(rc, self._persist_remote, parent=self)
+        outer.setContentsMargins(0, 2, 0, 0)
+        outer.setSpacing(0)
+        self.remote_cpu = remotecpu.RemoteCpuPanel(rc, self._persist_remote, parent=g)
         self.remote_cpu.log_line.connect(self.console_line)
-        self.cpu_tabs.addTab(self.remote_cpu, str(rc.get("label") or "PC2"))
-        outer.addWidget(self.cpu_tabs)
+        outer.addWidget(self.remote_cpu)
         return g
 
     def _build_cpu_local(self, lay: QGridLayout) -> None:
-        """Локальная карточка CPU — ровно та же, что была до появления второго ПК."""
-        lay.setHorizontalSpacing(10)
-        lay.setVerticalSpacing(6)
+        """Локальная карточка CPU — те же настройки, что были, но компактнее."""
+        lay.setContentsMargins(8, 2, 8, 6)
+        lay.setHorizontalSpacing(8)
+        lay.setVerticalSpacing(4)
+        lay.setColumnStretch(1, 1)
+        self.remote_cpu = None
 
         self.chk_cpu = QCheckBox("Вкл")
         self.chk_cpu_auto = QCheckBox("автозапуск")
         top = QHBoxLayout()
+        top.setSpacing(6)
         top.addWidget(self.chk_cpu)
-        top.addSpacing(8)
         top.addWidget(self.chk_cpu_auto)
         top.addStretch(1)
         lay.addLayout(top, 0, 0, 1, 2)
@@ -784,13 +793,18 @@ class MainWindow(QMainWindow):
             "100 % стоит +40 Вт за +0–5 % хешрейта.")
         lay.addWidget(self.chk_boost, 4, 0, 1, 2)
 
+        # Две живые строки: в узкой колонке одна строка не помещается, а QLabel
+        # обрезал бы хвост (частоту и загрузку) — так все числа на виду.
         self.lbl_cpu = QLabel("остановлен")
-        self.lbl_cpu.setStyleSheet("color:#4d9de0;font-family:Consolas;")
-        hint = QLabel("загрузка — счётчики Windows · температура, частота, мощность — "
-                      "LibreHardwareMonitor, запускается приложением в фоне")
-        hint.setStyleSheet("color:#6c7681;font-size:10px;")
+        self.lbl_cpu.setStyleSheet("color:#4d9de0;font-family:Consolas;font-size:11px;")
+        self.lbl_cpu2 = QLabel("температура, частота и Вт — LibreHardwareMonitor")
+        self.lbl_cpu2.setStyleSheet("color:#8fa3b8;font-size:10px;")
+        self.lbl_cpu.setToolTip(
+            "загрузка — счётчики Windows (GetSystemTimes) · температура, пакетная\n"
+            "мощность и частота — драйвер LibreHardwareMonitor (мост lhmd.ps1,\n"
+            "запускается приложением в фоне) · приоритет XMRig ниже обычного")
         lay.addWidget(self.lbl_cpu, 5, 0, 1, 2)
-        lay.addWidget(hint, 6, 0, 1, 2)
+        lay.addWidget(self.lbl_cpu2, 6, 0, 1, 2)
 
 
     def _build_metrics(self) -> QVBoxLayout:
@@ -1537,8 +1551,9 @@ class MainWindow(QMainWindow):
 
     def _blank_minute(self) -> dict:
         return {"ts": time.time(), "usd": 0.0, "kwh": 0.0, "cpu_kwh": 0.0, "cpu_usd": 0.0,
-                "pw": [], "tc": [], "fan": [], "hr": [], "cpu_pw": [],
-                "coin": "", "seconds": 0.0, "cpu_seconds": 0.0}
+                "remote_kwh": 0.0, "remote_usd": 0.0,
+                "pw": [], "tc": [], "fan": [], "hr": [], "cpu_pw": [], "remote_pw": [],
+                "coin": "", "seconds": 0.0, "cpu_seconds": 0.0, "remote_seconds": 0.0}
 
     def _accumulate(self, d: dict, tick: dict) -> None:
         m = self._minute
@@ -1575,28 +1590,58 @@ class MainWindow(QMainWindow):
         cpu_work = bool(d.get("cpu_running")) and bool(cpu_hr) and cpu_hr >= cpu_floor
         if cpu_work:
             m["cpu_seconds"] += dt
-            m["cpu_usd"] += monero.rev_per_hs_day() * float(cpu_hr) / 86400.0 * dt
+            d_usd = monero.rev_per_hs_day() * float(cpu_hr) / 86400.0 * dt
+            m["cpu_usd"] += d_usd
+            self.metrics.cpu_usd += d_usd
         self.rate_cpu.feed(now, cpu_hr, cpu_work)
+
+        # Третье устройство — CPU на втором ПК. Данные берём из его же опроса
+        # (агент отдаёт фактический хешрейт и потребление), поэтому доход и свет
+        # считаются ровно той же формулой, что и для локального процессора.
+        rc = self.remote_cpu
+        r_running = bool(rc is not None and rc.running)
+        r_last = (rc.last if rc is not None else {}) or {}
+        r_hr = float(r_last.get("hashrate") or 0.0) if r_running else 0.0
+        r_w = float(r_last.get("power_w") or 0.0) if r_running else 0.0
+        if r_running and not r_w:
+            r_w = float(rc.spin_threads.value()) * 8.75
+        r_kwh = r_w * dt / 3_600_000.0
+        m["remote_kwh"] += r_kwh
+        m["remote_pw"].append(r_w)
+        r_work = r_running and r_hr >= 300.0 * float(rc.spin_threads.value())
+        if r_work:
+            d_r_usd = monero.rev_per_hs_day() * r_hr / 86400.0 * dt
+            m["remote_usd"] += d_r_usd
+            m["remote_seconds"] += dt
+            self.metrics.cpu_remote_usd += d_r_usd
+        self.metrics.cpu_remote_kwh += r_kwh
+        self.rate_remote.feed(now, r_hr, r_work)
 
     def _flush_minute(self) -> None:
         m = self._minute
         avg = lambda xs: sum(xs) / len(xs) if xs else None
         gpu_power = avg(m["pw"])
         cpu_w = avg(m["cpu_pw"]) or 0.0
-        total_power = (gpu_power or 0.0) + cpu_w
+        remote_w = avg(m["remote_pw"]) or 0.0
+        total_power = (gpu_power or 0.0) + cpu_w + remote_w
+        total_kwh = m["kwh"] + m["cpu_kwh"] + m["remote_kwh"]
         try:
             history.append(m["ts"], m["coin"], total_power, avg(m["tc"]), avg(m["fan"]),
-                           avg(m["hr"]), m["usd"], m["kwh"] + m["cpu_kwh"], m["cpu_usd"])
+                           avg(m["hr"]), m["usd"], total_kwh, m["cpu_usd"],
+                           m["remote_usd"])
             if self.krig.is_running() or m["kwh"] > 0:
                 history.add_totals("gpu", m["coin"] or "pearl", m["usd"], m["kwh"],
                                    m["seconds"])
             if m["cpu_kwh"] > 0:
                 history.add_totals("cpu", "monero", m["cpu_usd"], m["cpu_kwh"],
                                    m["cpu_seconds"])
+            if m["remote_kwh"] > 0:
+                history.add_totals("cpu_remote", "monero", m["remote_usd"],
+                                   m["remote_kwh"], m["remote_seconds"])
         except OSError as e:
             self.console.put(f"история не записалась: {e}")
         self._period_minutes.append((int(m["ts"]), m["usd"], m["cpu_usd"],
-                                     m["kwh"] + m["cpu_kwh"]))
+                                     total_kwh, m["remote_usd"]))
         cutoff = time.time() - PERIOD_MAX - 3600
         while self._period_minutes and self._period_minutes[0][0] < cutoff:
             self._period_minutes.pop(0)
@@ -1616,17 +1661,19 @@ class MainWindow(QMainWindow):
                       if vram and vram_total else "VRAM —")
             self.lbl_gpu.setText(
                 f"{d.get('temp', '—')} °C · кулер {d.get('fan', '—')}% · "
-                f"{d.get('power', 0):.0f} Вт · {vram_s} · "
+                f"{d.get('power', 0):.0f} Вт · {vram_s}")
+            self.lbl_gpu2.setText(
                 f"{d.get('sm_clock', 0):.0f}/{d.get('mem_clock', 0):.0f} МГц · "
                 f"{fmt_hr(d.get('gpu_hashrate'), coin)}")
             self.lbl_gpu.setToolTip(
-                f"температура, обороты, потребление, занятая видеопамять, "
-                f"частоты ядра/памяти и хешрейт;\n"
+                f"температура, обороты, потребление, занятая видеопамять "
+                f"(вторая строка: частоты ядра/памяти и хешрейт);\n"
                 f"лимит мощности сейчас: {d.get('plimit', 0):.0f} Вт "
                 f"(цель {self.spin_pl.value()} Вт), загрузка GPU: "
                 f"{d.get('util', 0):.0f}%")
         else:
             self.lbl_gpu.setText("остановлен")
+            self.lbl_gpu2.setText("")
         # метрики процессора: температура/частота/мощность — от моста LHM, загрузка — Windows
         threads = self._cpu_threads_now()
         if d.get("cpu_running"):
@@ -1636,19 +1683,20 @@ class MainWindow(QMainWindow):
             mhz = d.get("cpu_mhz")
             watts = d.get("cpu_watts")
             est = d.get("cpu_est_watts")
-            bits = [f"{threads} потоков",
-                    f"{(hr / 1000):.1f} kH/s" if hr else "разгон датасета…"]
+            line1 = []
             if temp is not None:
-                bits.append(f"{temp:.0f} °C")
-            if mhz:
-                bits.append(f"{mhz:.0f} МГц")
+                line1.append(f"{temp:.0f} °C")
             if watts:
-                bits.append(f"{watts:.0f} Вт")
+                line1.append(f"{watts:.0f} Вт")
             elif est:
-                bits.append(f"~{est:.0f} Вт (оценка)")
+                line1.append(f"~{est:.0f} Вт")
+            line1.append(f"{(hr / 1000):.2f} kH/s" if hr else "разгон датасета…")
+            self.lbl_cpu.setText(" · ".join(line1))
+            line2 = [f"{mhz:.0f} МГц"] if mhz else []
             if util is not None:
-                bits.append(f"загрузка {util:.0f}%")
-            self.lbl_cpu.setText(" · ".join(bits))
+                line2.append(f"загрузка {util:.0f}%")
+            line2.append(f"{threads} потоков")
+            self.lbl_cpu2.setText(" · ".join(line2))
             src = ("температура, пакетная мощность и частота — драйвер "
                    "LibreHardwareMonitor (мост lhmd.ps1)") if d.get("cpu_bridge") else (
                    "мост датчиков не запущен: мощность — оценка 8.75 Вт на поток, "
@@ -1657,38 +1705,44 @@ class MainWindow(QMainWindow):
                                     f"потоков {threads}, приоритет ниже обычного")
         else:
             self.lbl_cpu.setText("остановлен")
+            self.lbl_cpu2.setText("температура, частота и Вт — LibreHardwareMonitor")
             self.lbl_cpu.setToolTip("")
 
-    def _now_rates(self, coin: str) -> tuple[float, float, float, float]:
-        """(GPU ₽/ч, CPU ₽/ч, точность %, окно в секундах) по последним 10 минутам."""
+    def _now_rates(self, coin: str) -> tuple[float, float, float, float, float]:
+        """(GPU ₽/ч, CPU ₽/ч, PC2 ₽/ч, точность %, окно в секундах) за 10 минут."""
         g = self.rate_gpu.stats()
         c = self.rate_cpu.stats()
+        r = self.rate_remote.stats()
         gpu = g["mean"] * self.metrics.usd_per_hour_mark(coin) * self.usd_rub
         cpu = c["mean"] * monero.rev_per_hs_day() * self.usd_rub / 24.0
-        window = max(g["seconds"], c["seconds"])
-        if g["mean"] and c["mean"]:
-            rel = max(g["rel_pct"], c["rel_pct"])
-        elif g["mean"]:
-            rel = g["rel_pct"]
-        else:
-            rel = c["rel_pct"]
-        return gpu, cpu, rel, window
+        remote = r["mean"] * monero.rev_per_hs_day() * self.usd_rub / 24.0
+        window = max(g["seconds"], c["seconds"], r["seconds"])
+        rels = [s["rel_pct"] for s in (g, c, r) if s["mean"]]
+        rel = max(rels) if rels else 0.0
+        return gpu, cpu, remote, rel, window
 
     def _update_metrics(self, coin: str) -> None:
         el = self.metrics.elapsed()
         rate = self.usd_rub
         tariff = rates.electricity_rub_kwh()
+        usd = self.metrics.total_usd
+        kwh = self.metrics.total_kwh
         self.card_time.value.setText(fmt_hms(el))
-        self.card_usd.value.setText(
-            f"${self.metrics.usd:.3f} ({self.metrics.usd * rate:.2f} ₽)")
-        self.card_rub.value.setText(fmt_rub(self.metrics.kwh * tariff))
+        self.card_usd.value.setText(f"${usd:.3f} ({usd * rate:.2f} ₽)")
+        self.card_usd.set_tip(
+            "сеанс, все три устройства:\n"
+            f"GPU ({coin}): ${self.metrics.usd:.4f}\n"
+            f"CPU (monero): ${self.metrics.cpu_usd:.4f}\n"
+            f"PC2 (monero): ${self.metrics.cpu_remote_usd:.4f}")
+        self.card_rub.value.setText(fmt_rub(kwh * tariff))
         hours = el / 3600 or 1e-9
         self.card_rub.set_tip(
-            f"{self.metrics.kwh:.3f} кВт·ч при тарифе {tariff:.2f} ₽/кВт·ч\n"
-            f"средняя мощность за сеанс {self.metrics.kwh * 1000 / hours:.0f} Вт")
+            f"{kwh:.3f} кВт·ч при тарифе {tariff:.2f} ₽/кВт·ч\n"
+            f"средняя мощность за сеанс {kwh * 1000 / hours:.0f} Вт\n"
+            "входит свет GPU, локального CPU и второго ПК")
 
-        gpu_rate, cpu_rate, rel, window = self._now_rates(coin)
-        total = gpu_rate + cpu_rate
+        gpu_rate, cpu_rate, remote_rate, rel, window = self._now_rates(coin)
+        total = gpu_rate + cpu_rate + remote_rate
         if total <= 0:
             suffix = ""
         elif rel >= 50:
@@ -1702,6 +1756,7 @@ class MainWindow(QMainWindow):
             f"Среднее за последние 10 минут реальной работы (окно {window / 60:.1f} мин)\n"
             f"GPU ({coin}): {fmt_rub(gpu_rate)}/ч\n"
             f"CPU (monero): {fmt_rub(cpu_rate)}/ч\n"
+            f"PC2 (monero): {fmt_rub(remote_rate)}/ч\n"
             f"точность ±{rel:.0f}% — растёт по мере накопления точек\n"
             "простои и разгон не учитываются")
         self._update_periods(coin)
@@ -1717,7 +1772,8 @@ class MainWindow(QMainWindow):
             rows = history.load(now - PERIOD_MAX, now)
         except OSError:
             rows = []
-        self._period_minutes = [(int(r["ts"]), r["usd"], r["cpu_usd"], r["kwh"])
+        self._period_minutes = [(int(r["ts"]), r["usd"], r["cpu_usd"], r["kwh"],
+                                 r["cpu_remote_usd"])
                                 for r in rows]
         self._sums = self._window_sums()
         self._update_periods(self._active_coin())
@@ -1726,18 +1782,20 @@ class MainWindow(QMainWindow):
         """Один проход по кэшу сразу для всех периодов: в АФК это заметно дешевле."""
         now = time.time()
         cuts = {dat: now - secs for _acc, dat, secs, _h, _u in PERIODS}
-        out = {dat: {"gpu": 0.0, "cpu": 0.0, "kwh": 0.0, "first": None, "work_min": 0}
+        out = {dat: {"gpu": 0.0, "cpu": 0.0, "remote": 0.0, "kwh": 0.0,
+                     "first": None, "work_min": 0}
                for dat in cuts}
-        for ts, usd_g, usd_c, kwh_v in reversed(self._period_minutes):
+        for ts, usd_g, usd_c, kwh_v, usd_r in reversed(self._period_minutes):
             hit = False
             for dat, cut in cuts.items():
                 if ts >= cut:
                     acc = out[dat]
                     acc["gpu"] += usd_g
                     acc["cpu"] += usd_c
+                    acc["remote"] += usd_r
                     acc["kwh"] += kwh_v
                     acc["first"] = ts
-                    if usd_g + usd_c > 0:
+                    if usd_g + usd_c + usd_r > 0:
                         acc["work_min"] += 1     # минута, в которую реально копали
                     hit = True
             if not hit:
@@ -1745,7 +1803,7 @@ class MainWindow(QMainWindow):
         for dat, acc in out.items():
             hours = (now - acc["first"]) / 3600 if acc["first"] else 0.0
             hours_work = acc["work_min"] / 60.0
-            usd = acc["gpu"] + acc["cpu"]
+            usd = acc["gpu"] + acc["cpu"] + acc["remote"]
             acc.update(usd=usd, hours=hours, hours_work=hours_work,
                        per_hour=usd / hours if hours > 0 else 0.0,
                        per_hour_work=usd / hours_work if hours_work > 0 else 0.0)
@@ -1763,8 +1821,8 @@ class MainWindow(QMainWindow):
         tariff = rates.electricity_rub_kwh()
         coin = coin or self._active_coin()
         sums = self._sums or self._window_sums()
-        gpu_h, cpu_h, rel, window = self._now_rates(coin)
-        now_h = gpu_h + cpu_h
+        gpu_h, cpu_h, remote_h, rel, window = self._now_rates(coin)
+        now_h = gpu_h + cpu_h + remote_h
         cards = {"час": self.card_hour, "сутки": self.card_day,
                  "неделя": self.card_week, "месяц": self.card_month}
         for acc, dat, _secs, period_h, _unit in PERIODS:
@@ -1778,14 +1836,16 @@ class MainWindow(QMainWindow):
                          else "факт ещё не накопился")
             tip = [f"прогноз: текущий темп {fmt_rub(now_h)}/ч × {period_h:.0f} ч",
                    f"прогноз на {dat}: {fmt_rub(now_h * period_h)} "
-                   f"(GPU {fmt_rub(gpu_h * period_h)} · CPU {fmt_rub(cpu_h * period_h)})",
-                   f"сейчас: GPU {fmt_rub(gpu_h)}/ч · CPU {fmt_rub(cpu_h)}/ч"
-                   + (f" · ±{rel:.0f}%" if rel else ""),
+                   f"(GPU {fmt_rub(gpu_h * period_h)} · CPU {fmt_rub(cpu_h * period_h)} · "
+                   f"PC2 {fmt_rub(remote_h * period_h)})",
+                   f"сейчас: GPU {fmt_rub(gpu_h)}/ч · CPU {fmt_rub(cpu_h)}/ч · "
+                   f"PC2 {fmt_rub(remote_h)}/ч" + (f" · ±{rel:.0f}%" if rel else ""),
                    f"окно текущего темпа: {window / 60:.0f} мин реальной работы"]
             if work_h > 0.02:
                 tip += [f"факт за {acc}: {fact} за {work_h:.1f} ч майнинга",
                         f"  GPU {fmt_rub(float(s.get('gpu') or 0) * rate)} · "
-                        f"CPU {fmt_rub(float(s.get('cpu') or 0) * rate)}",
+                        f"CPU {fmt_rub(float(s.get('cpu') or 0) * rate)} · "
+                        f"PC2 {fmt_rub(float(s.get('remote') or 0) * rate)}",
                         f"  свет {fmt_rub(float(s.get('kwh') or 0) * tariff)} · "
                         f"{float(s.get('kwh') or 0):.3f} кВт·ч",
                         f"средний факт-темп: {fmt_rub(usd_fact / work_h * rate)}/ч"]
@@ -1797,9 +1857,11 @@ class MainWindow(QMainWindow):
         self.card_total.value.setText(fmt_rub(usd * rate))
         self.card_total.set_sub(f"{fmt_rub(usd * rate / hours)}/ч" if hours > 0.02 else "")
         lines = ["по устройствам:"]
+        names = {"gpu": "GPU", "cpu": "CPU", "cpu_remote": "PC2"}
         for device, algos in totals.items():
             for algo, node in algos.items():
-                lines.append(f"{device.upper()} ({algo}): {fmt_rub(node.get('usd', 0) * rate)} · "
+                lines.append(f"{names.get(device, device.upper())} ({algo}): "
+                             f"{fmt_rub(node.get('usd', 0) * rate)} · "
                              f"{node.get('seconds', 0) / 3600:.1f} ч работы")
         lines.append(f"итого: {fmt_rub(usd * rate)} · {hours:.1f} ч работы · "
                      f"{kwh:.2f} кВт·ч")

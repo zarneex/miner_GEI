@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # windows — для снимка с живыми шрифтами
 os.environ["MINER_NO_AUTOSTART"] = "1"
 ROOT = Path(tempfile.mkdtemp(prefix="miner-remote-test-"))
 os.environ["MINER_ROOT"] = str(ROOT)
@@ -44,7 +44,7 @@ DST.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 shutil.copytree(r"W:\mining\scripts", ROOT / "scripts",
                 ignore=shutil.ignore_patterns("__pycache__"))
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QGroupBox  # noqa: E402
 
 from minerapp import remote_cpu as rc  # noqa: E402
 from minerapp import ui as uimod  # noqa: E402
@@ -127,22 +127,26 @@ def pump(ms: int) -> None:
 
 try:
     pump(1200)
-    check("вкладки секции «Процессор»: две", w.cpu_tabs is not None and w.cpu_tabs.count() == 2,
-          f"count={w.cpu_tabs.count() if w.cpu_tabs else 0}")
-    check("подписи вкладок", [w.cpu_tabs.tabText(i) for i in range(2)] ==
-          ["Этот ПК", "PC2 · i5-13500"], str([w.cpu_tabs.tabText(i) for i in range(2)]))
+    check("вкладок внутри секции нет", w.cpu_tabs is None)
+    boxes = [b.title() for b in w.findChildren(QGroupBox)]
+    check("три устройства видны одновременно",
+          boxes[:3] == ["Видеокарта · RTX 5070", "Процессор · Ryzen 7 9800X3D",
+                        "Процессор · PC2 · i5-13500"], str(boxes))
+    check("все три карточки видимы",
+          all(b.isVisible() for b in w.findChildren(QGroupBox)[:3]))
     check("окно не стало шире", w.width() == 1160 and w.minimumWidth() == 960,
           f"{w.width()}x{w.height()}, min {w.minimumWidth()}")
     check("локальная карточка на месте",
           all(hasattr(w, n) for n in ("chk_cpu", "spin_threads", "spin_load", "chk_hold",
                                       "spin_cpu_temp", "chk_boost", "lbl_cpu")))
     r = w.remote_cpu
-    check("вкладка PC2 создана", r is not None)
+    check("карточка PC2 создана", r is not None)
     check("значения из конфига", (r.spin_threads.value(), r.spin_load.value(),
                                   r.chk_hold.isChecked()) == (12, 100, False),
           f"{r.spin_threads.value()}/{r.spin_load.value()}/{r.chk_hold.isChecked()}")
     check("живая строка после опроса", r.lbl_live.text() == "остановлен",
           r.lbl_live.text())
+    check("вторая строка карточки PC2", bool(r.lbl_detail.text()), r.lbl_detail.text())
 
     r.chk_on.setChecked(True)
     pump(900)
@@ -150,6 +154,24 @@ try:
           str(FakeAgent.last.calls[-2:]))
     check("галочка «Вкл» осталась включённой", r.chk_on.isChecked() and r.running)
     check("live показывает работу", "kH/s" in r.lbl_live.text(), r.lbl_live.text())
+
+    # Счётчики: доход второго ПК идёт в сессию, минуту, историю и итоги — как у CPU.
+    from minerapp import history  # noqa: E402
+    # во временном MINER_ROOT нет кэша monero.json — фиксируем оценку дохода
+    uimod.monero.rev_per_hs_day = lambda: 1.0
+    r.last = {"hashrate": 7090.0, "power_w": 100.0}
+    usd0 = w.metrics.cpu_remote_usd
+    w._accumulate({"cpu_running": False, "gpu_running": False},
+                  {"dt": 60.0, "d_usd": 0.0, "d_kwh": 0.0})
+    check("доход PC2 в сессии", w.metrics.cpu_remote_usd > usd0,
+          f"{w.metrics.cpu_remote_usd:.9f}")
+    check("минута PC2: доход и кВт·ч",
+          w._minute["remote_usd"] > 0 and w._minute["remote_kwh"] > 0,
+          f"{w._minute['remote_usd']:.9f} / {w._minute['remote_kwh']:.6f}")
+    w._flush_minute()
+    rows = history.load()
+    check("в истории есть колонка PC2", any(float(r["cpu_remote_usd"]) > 0 for r in rows))
+    check("итог за всё время: три устройства", "cpu_remote" in history.load_totals())
 
     r.spin_threads.setValue(10)
     pump(1100)
@@ -182,7 +204,29 @@ try:
     check("стоп ушёл агенту", any(c == "stop" for c, _ in FakeAgent.last.calls))
     check("после стопа не работает", not r.running and not r.chk_on.isChecked())
 
-    shot = Path(r"C:\Users\Admin\DSH\майнинг\miner\notes\remote-cpu-tab.png")
+    # Демонстрационный кадр: все три карточки с живыми числами (майнеры не запускаем).
+    # Датчики отключаем, иначе следующий кадр перезапишет подписи на «остановлен».
+    try:
+        w.sensors.snapshot.disconnect(w.on_snapshot)
+    except (RuntimeError, TypeError):
+        pass
+    w.remote_cpu._apply_status({
+        "running": True, "temp_c": 81.0, "power_w": 100, "mhz": 3667,
+        "hashrate": 7090, "threads_run": 10, "load_pct": 80, "governor": {},
+    })
+    w._update_labels({
+        "gpu_running": True, "temp": 66.5, "fan": 56, "power": 180,
+        "vram_mb": 9318, "vram_total_mb": 12227, "sm_clock": 2775,
+        "mem_clock": 17001, "gpu_hashrate": 109.3e12, "plimit": 240, "util": 95,
+        "cpu_running": True, "cpu_temp": 75.9, "cpu_watts": 90.7, "cpu_mhz": 4622,
+        "cpu_hashrate": 9410, "cpu_util": 100, "cpu_bridge": True,
+    }, "pearl")
+    pump(150)
+    print(f"GPU: {w.lbl_gpu.text()} | {w.lbl_gpu2.text()}")
+    print(f"CPU: {w.lbl_cpu.text()} | {w.lbl_cpu2.text()}")
+    print(f"PC2: {w.remote_cpu.lbl_live.text()} | {w.remote_cpu.lbl_detail.text()}")
+
+    shot = Path(r"C:\Users\Admin\DSH\майнинг\miner\notes\three-devices.png")
     w.grab().save(str(shot))
     check("снимок сохранён", shot.exists() and shot.stat().st_size > 10000,
           f"{shot.stat().st_size if shot.exists() else 0} B")

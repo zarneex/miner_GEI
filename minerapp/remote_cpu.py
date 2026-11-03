@@ -202,16 +202,17 @@ class RemoteCpuPanel(QWidget):
     # --- построение --------------------------------------------------------
     def _build(self) -> None:
         lay = QGridLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setHorizontalSpacing(10)
-        lay.setVerticalSpacing(6)
+        lay.setContentsMargins(8, 2, 8, 6)
+        lay.setHorizontalSpacing(8)
+        lay.setVerticalSpacing(4)
+        lay.setColumnStretch(1, 1)
 
         self.chk_on = QCheckBox("Вкл")
         self.chk_auto = QCheckBox("автозапуск")
         self.chk_auto.setToolTip("Запускать CPU-майнинг на этом ПК при старте приложения.")
         top = QHBoxLayout()
+        top.setSpacing(6)
         top.addWidget(self.chk_on)
-        top.addSpacing(8)
         top.addWidget(self.chk_auto)
         top.addStretch(1)
         self.lbl_state = QLabel("нет связи")
@@ -265,13 +266,13 @@ class RemoteCpuPanel(QWidget):
         lay.addWidget(self.chk_boost, 4, 0, 1, 2)
 
         self.lbl_live = QLabel("остановлен")
-        self.lbl_live.setStyleSheet("color:#4d9de0;font-family:Consolas;")
-        self.hint = QLabel("")
-        self.hint.setStyleSheet("color:#6c7681;font-size:10px;")
+        self.lbl_live.setStyleSheet("color:#4d9de0;font-family:Consolas;font-size:11px;")
+        self.lbl_detail = QLabel("")
+        self.lbl_detail.setStyleSheet("color:#8fa3b8;font-size:10px;")
         lay.addWidget(self.lbl_live, 5, 0, 1, 2)
-        lay.addWidget(self.hint, 6, 0, 1, 2)
+        lay.addWidget(self.lbl_detail, 6, 0, 1, 2)
+        self.setToolTip(self._hint_text())
         self._sync_hold_ui()
-        self._update_hint()
 
         self.chk_on.toggled.connect(self.on_toggle)
         self.chk_auto.toggled.connect(lambda on: self._save("autostart", bool(on)))
@@ -287,10 +288,11 @@ class RemoteCpuPanel(QWidget):
         self._load_timer.setSingleShot(True)
         self._load_timer.timeout.connect(self.on_load)
 
-    def _update_hint(self) -> None:
+    def _hint_text(self) -> str:
         host = str(self.cfg.get("host") or "pc2")
-        self.hint.setText(f"{host}: управление по SSH · XMRig на втором ПК · "
-                          "температура/частота — LHM")
+        return (f"{host}: управление по SSH, отдельного порта и службы нет · "
+                "XMRig на втором ПК · температура/частота — LHM · "
+                "агент сам держит Job Object и термогувернатор")
 
     def _sync_hold_ui(self) -> None:
         on = self.chk_hold.isChecked()
@@ -332,11 +334,19 @@ class RemoteCpuPanel(QWidget):
         if self.running:
             parts = [f"{temp:.1f} °C" if temp is not None else "— °C",
                      f"{power:.0f} Вт" if power is not None else "— Вт",
-                     f"{mhz:.0f} МГц" if mhz is not None else "— МГц",
                      f"{hr / 1000:.2f} kH/s" if hr is not None else "— kH/s"]
             self.lbl_live.setText(" · ".join(parts))
+            det = []
+            if mhz:
+                det.append(f"{mhz:.0f} МГц")
+            threads_run = st.get("threads_run") or int(self.spin_threads.value())
+            det.append(f"{threads_run} потоков")
+            if st.get("load_pct"):
+                det.append(f"доля {st['load_pct']} %")
+            self.lbl_detail.setText(" · ".join(det))
         else:
             self.lbl_live.setText("остановлен")
+            self.lbl_detail.setText("на связи · XMRig не запущен")
         gov = st.get("governor") or {}
         if gov.get("active"):
             self.chk_hold.setToolTip("Гувернатор держит потолок "
@@ -360,6 +370,7 @@ class RemoteCpuPanel(QWidget):
         if was:
             self._log(f"PC2: нет связи — {err}")
         self.lbl_live.setToolTip(str(err or ""))
+        self.lbl_detail.setText("")
 
     def _sync_on(self) -> None:
         if self.chk_on.isChecked() != self.running:
