@@ -163,3 +163,8 @@ tools/                  тесты, пробы, проверка обратим�
 
 Как пушить и куда — [CONTRIBUTING.md](CONTRIBUTING.md). Коротко: в `main`
 пишет только владелец репозитория, все остальные — в свои ветки и через PR.
+
+## Contributors
+
+- [@zarneex](https://github.com/zarneex) — автор и владелец репозитория
+- [@kaiverx](https://github.com/kaiverx) — участник проекта
