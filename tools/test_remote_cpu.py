@@ -36,7 +36,7 @@ cfg.setdefault("app", {})["cpu_remote"] = {
     "python": r"C:\Python314\pythonw.exe",
     "script": r"C:\mining\agent\remote_cpu_agent.py",
     "label": "PC2 · i5-13500",
-    "threads": 12, "threads_max": 20, "load": 100,
+    "threads": 12, "threads_max": 12, "load": 100,
     "autostart": False, "hold_temp": False, "max_temp": 80.0, "allow_100": True,
 }
 DST.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -81,6 +81,7 @@ class FakeAgent:
             return {
                 "ok": True, "running": self.running, "pid": 4242 if self.running else 0,
                 "threads": self.threads, "threads_run": self.threads if self.running else 0,
+                "mask": 4095, "cpus": "0-11" if self.threads <= 12 else "0-19",
                 "load_pct": self.load, "hashrate": self.hr if self.running else None,
                 "uptime": 77 if self.running else 0, "temp_c": self.temp,
                 "power_w": self.power, "mhz": self.mhz, "load_sensor": 90,
@@ -147,6 +148,8 @@ try:
     check("живая строка после опроса", r.lbl_live.text() == "остановлен",
           r.lbl_live.text())
     check("вторая строка карточки PC2", bool(r.lbl_detail.text()), r.lbl_detail.text())
+    check("предел потоков — P-ядра, а не все логические",
+          r.spin_threads.maximum() == 12, str(r.spin_threads.maximum()))
 
     r.chk_on.setChecked(True)
     pump(900)
@@ -154,6 +157,8 @@ try:
           str(FakeAgent.last.calls[-2:]))
     check("галочка «Вкл» осталась включённой", r.chk_on.isChecked() and r.running)
     check("live показывает работу", "kH/s" in r.lbl_live.text(), r.lbl_live.text())
+    check("подсказка потоков показывает занятые ядра", "0-11" in r.spin_threads.toolTip(),
+          r.spin_threads.toolTip().splitlines()[-1])
 
     # Счётчики: доход второго ПК идёт в сессию, минуту, историю и итоги — как у CPU.
     from minerapp import history  # noqa: E402

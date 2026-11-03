@@ -15,14 +15,17 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import secrets
+import struct
 import subprocess
 import sys
 import threading
 import time
 import traceback
+from ctypes import wintypes
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -46,10 +49,122 @@ from cpu_limit import CpuLimiter  # noqa: E402
 from governor import ThermalGovernor  # noqa: E402
 
 
+# --- топология CPU: P- и E-ядра -------------------------------------------
+# Порядок занятия задаётся не «младшими битами», а физическими ядрами:
+# сначала P-ядра целиком (ядро за ядром, оба SMT-потока), затем E-ядра.
+# На i5-13500 (6P+8E, 24 МБ L3) это значит: 2 ядра = 4 потока, все 6 P = 12,
+# дальше добавляются E. Больше ~12 потоков случайного доступа RandomX кеш
+# не тянет (замер 2026-11-04: 12 потоков 7.1 kH/s, 20 потоков 5.6 kH/s).
+
+_RELATION_PROCESSOR_CORE = 0
+_ORDER: list[int] | None = None
+
+
+class _GroupAffinity(ctypes.Structure):
+    _fields_ = [("Mask", ctypes.c_size_t),
+                ("Group", wintypes.WORD),
+                ("Reserved", wintypes.WORD * 3)]
+
+
+class _ProcessorRelationship(ctypes.Structure):
+    _fields_ = [("Flags", ctypes.c_ubyte),
+                ("EfficiencyClass", ctypes.c_ubyte),
+                ("Reserved", ctypes.c_ubyte * 20),
+                ("GroupCount", wintypes.WORD),
+                ("GroupMask", _GroupAffinity * 1)]
+
+
+def _core_layout() -> list[tuple[int, list[int]]] | None:
+    """(класс эффективности, логические CPU) по каждому ядру из Windows.
+
+    Класс 0 — энергоэффективные ядра, класс выше — производительные: на
+    i5-13500 Windows отдаёт 12 потоков P-класса (cpu 0–11) и 8 E-ядер
+    класса 0 (cpu 12–19). `None`, если топологию получить не удалось.
+    """
+    try:
+        fn = ctypes.WinDLL("kernel32", use_last_error=True) \
+            .GetLogicalProcessorInformationEx
+        fn.argtypes = [wintypes.DWORD, ctypes.c_void_p,
+                       ctypes.POINTER(wintypes.DWORD)]
+        fn.restype = wintypes.BOOL
+        need = wintypes.DWORD(0)
+        fn(_RELATION_PROCESSOR_CORE, None, ctypes.byref(need))
+        if not need.value:
+            return None
+        buf = ctypes.create_string_buffer(need.value)
+        if not fn(_RELATION_PROCESSOR_CORE, buf, ctypes.byref(need)):
+            return None
+        cores: list[tuple[int, list[int]]] = []
+        off = 0
+        while off + 8 <= need.value:
+            rel, size = struct.unpack_from("<II", buf.raw, off)
+            if size < 8:
+                break
+            if rel == _RELATION_PROCESSOR_CORE:
+                eff = buf.raw[off + 9]
+                count = struct.unpack_from("<H", buf.raw, off + 8 + 22)[0]
+                cpus: list[int] = []
+                for i in range(count):
+                    base = off + 8 + 24 + i * 16
+                    bits = struct.unpack_from("<Q", buf.raw, base)[0]
+                    group = struct.unpack_from("<H", buf.raw, base + 8)[0]
+                    for bit in range(64):
+                        if bits >> bit & 1:
+                            cpus.append(group * 64 + bit)
+                if not cpus:
+                    break
+                cores.append((eff, cpus))
+            off += size
+        return cores or None
+    except (OSError, AttributeError, ValueError, struct.error):
+        return None
+
+
+def _cpu_order() -> list[int]:
+    """Логические CPU в порядке занятия: P-ядра, затем E-ядра."""
+    global _ORDER
+    if _ORDER is None:
+        total = os.cpu_count() or 1
+        lay = _core_layout()
+        if not lay:
+            _ORDER = list(range(total))
+        else:
+            order: list[int] = []
+            for cls in sorted({c for c, _ in lay}, reverse=True):
+                for eff, cpus in lay:
+                    if eff == cls:
+                        order.extend(sorted(cpus))
+            for cpu in range(total):
+                if cpu not in order:
+                    order.append(cpu)
+            _ORDER = order
+    return _ORDER
+
+
 def _mask(threads: int) -> int:
-    """Младшие логические CPU: на Intel 12+ это P-ядра, E-ядра идут последними."""
+    """Маска CPU под N потоков: P-ядра целиком, только потом E-ядра."""
     n = max(1, min(int(threads), os.cpu_count() or 1))
-    return (1 << n) - 1
+    mask = 0
+    for cpu in _cpu_order()[:n]:
+        mask |= 1 << cpu
+    return mask
+
+
+def _cpu_list(mask: int) -> str:
+    """`0-5,12-13` — какие логические CPU попали в маску."""
+    ids = [c for c in range(64) if mask >> c & 1]
+    if not ids:
+        return "—"
+    parts: list[str] = []
+    start = prev = ids[0]
+    for cpu in ids[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        parts.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = cpu
+    parts.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(parts)
 
 
 def _read_json(path: Path) -> dict:
@@ -68,6 +183,7 @@ class Agent:
         self.api: XmrigApi | None = None
         self.limiter = CpuLimiter(kill_on_close=True)
         self.threads = 0
+        self.mask = 0
         self.load_pct = 100
         self.hold = False
         self.target = 80.0
@@ -192,10 +308,12 @@ class Agent:
                 creationflags=NO_WINDOW)
             self.api = XmrigApi(HTTP_PORT, token)
             self.threads = n
+            self.mask = mask
             if not self.limiter.attach(self.proc.pid, self.load_pct):
                 self._log(f"Job Object не сел: {self.limiter.last_error}")
-            self._log(f"XMRig стартовал: pid={self.proc.pid}, {n} потоков, маска 0x{mask:X}")
-            return f"{n} потоков, маска 0x{mask:X}"
+            self._log(f"XMRig стартовал: pid={self.proc.pid}, {n} потоков, "
+                      f"ядра {_cpu_list(mask)} (маска 0x{mask:X})")
+            return f"{n} потоков, ядра {_cpu_list(mask)}"
 
     def stop(self) -> str:
         with self._lock:
@@ -220,13 +338,17 @@ class Agent:
     def set_threads(self, n: int) -> str:
         with self._lock:
             n = max(2, min(int(n), os.cpu_count() or 2))
+            mask = _mask(n)
             if not self._running() or self.api is None:
                 self.threads = n
+                self.mask = mask
                 return f"запомнено {n} — применю при старте"
-            if not self.api.set_threads(n, _mask(n)):
+            if not self.api.set_threads(n, mask):
                 raise RuntimeError(self.api.last_error or "API не поменял потоки")
             self.threads = n
-            return f"потоки -> {n} без перезапуска"
+            self.mask = mask
+            self._log(f"потоки: {n}, ядра {_cpu_list(mask)} (маска 0x{mask:X})")
+            return f"потоки -> {n}, ядра {_cpu_list(mask)}"
 
     def set_load(self, pct: int) -> str:
         with self._lock:
@@ -254,6 +376,9 @@ class Agent:
             "pid": self.proc.pid if running and self.proc else 0,
             "threads": self.threads,
             "threads_run": run_threads or (self.threads if running else 0),
+            "mask": self.mask,
+            "cpus": _cpu_list(self.mask) if self.mask else "",
+            "cpu_total": os.cpu_count() or 0,
             "load_pct": self.load_pct,
             "hashrate": hashrate,
             "uptime": uptime or 0,
@@ -323,12 +448,34 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdio", action="store_true")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--topo", action="store_true", help="P/E-ядра и порядок потоков")
     ap.add_argument("--wait-sensors", type=float, default=8.0)
     a = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     except (AttributeError, OSError):
         pass
+    if a.topo:
+        lay = _core_layout()
+        if not lay:
+            print("топология недоступна")
+            return 2
+        groups: dict[int, list[int]] = {}
+        for eff, cpus in lay:
+            groups.setdefault(eff, []).extend(cpus)
+        top = max(groups)
+        for eff in sorted(groups, reverse=True):
+            cpus = sorted(groups[eff])
+            if len(groups) == 1:
+                kind = "ядра (без P/E-разметки)"
+            else:
+                kind = "P-ядра" if eff == top else "E-ядра"
+            print(f"{kind} (класс {eff}): {len(cpus)} потоков, "
+                  f"cpu {_cpu_list(sum(1 << c for c in cpus))}")
+        print(f"порядок: {_cpu_order()}")
+        for n in (2, 4, 6, 8, 10, 12, 14, 20):
+            print(f"  {n:2d} потоков -> 0x{_mask(n):X}  cpu {_cpu_list(_mask(n))}")
+        return 0
     agent = Agent()
     if a.selftest:
         deadline = time.time() + a.wait_sensors

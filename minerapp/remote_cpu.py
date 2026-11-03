@@ -192,6 +192,7 @@ class RemoteCpuPanel(QWidget):
         self._polling = False
         self._autostart_pending = False
         self.last: dict = {}
+        self._cpus_shown = ""
         self._build()
         self._timer = QTimer(self)
         self._timer.setInterval(POLL_MS)
@@ -224,9 +225,7 @@ class RemoteCpuPanel(QWidget):
         self.spin_threads.setRange(2, int(self.cfg.get("threads_max") or 32))
         self.spin_threads.setSingleStep(1)
         self.spin_threads.setValue(int(self.cfg.get("threads") or 8))
-        self.spin_threads.setToolTip(
-            "Сколько потоков отдать XMRig на втором ПК. Меняются на ходу через\n"
-            "HTTP API, без перезапуска (если API не ответил — карточка перезапустит).")
+        self.spin_threads.setToolTip(self._threads_tip())
         lay.addWidget(QLabel("Потоков"), 1, 0)
         lay.addWidget(self.spin_threads, 1, 1)
 
@@ -294,6 +293,15 @@ class RemoteCpuPanel(QWidget):
                 "XMRig на втором ПК · температура/частота — LHM · "
                 "агент сам держит Job Object и термогувернатор")
 
+    def _threads_tip(self, cpus: str = "") -> str:
+        tip = ("Сколько потоков отдать XMRig на втором ПК. Меняются на ходу через\n"
+               "HTTP API, без перезапуска (если API не ответил — карточка перезапустит).\n"
+               "Порядок: сначала P-ядра (0–11), E-ядра (12–19) — только после них.\n"
+               "Кеш L3 24 МБ тянет ~12 потоков: больше — хешрейт падает, а не растёт.")
+        if cpus:
+            tip += f"\nСейчас заняты ядра {cpus}."
+        return tip
+
     def _sync_hold_ui(self) -> None:
         on = self.chk_hold.isChecked()
         self.spin_temp.setEnabled(on)
@@ -347,6 +355,10 @@ class RemoteCpuPanel(QWidget):
         else:
             self.lbl_live.setText("остановлен")
             self.lbl_detail.setText("на связи · XMRig не запущен")
+        cpus = str(st.get("cpus") or "")
+        if cpus and cpus != self._cpus_shown:
+            self._cpus_shown = cpus
+            self.spin_threads.setToolTip(self._threads_tip(cpus))
         gov = st.get("governor") or {}
         if gov.get("active"):
             self.chk_hold.setToolTip("Гувернатор держит потолок "
