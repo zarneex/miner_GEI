@@ -1,0 +1,138 @@
+{
+  "_comment": "Конфиг майнинга. KRYPTEX_USER заполнить после регистрации на kryptex.com: формат 'логин/rig1'.",
+  "kryptex_user": "krx-ВАШ-ЛОГИН/rig1",
+  "coins": {
+    "pearl": {
+      "wtm_id": 469,
+      "coingecko_id": "pearl-2",
+      "url": "stratum+ssl://prl-ru.kryptex.network:8048",
+      "api_port": 12000,
+      "pool_fee": 0.03,
+      "preset": {
+        "plimit": 250,
+        "coffset": 0,
+        "moffset": 0
+      },
+      "measured": {
+        "normal": {
+          "hashrate": 109346278627987.1,
+          "power_w": 180.2
+        },
+        "max": {
+          "hashrate": 121954941849302.6,
+          "power_w": 250.1
+        },
+        "quiet": {
+          "hashrate": 100462493910686.4,
+          "power_w": 174.9
+        }
+      }
+    },
+    "quantus": {
+      "wtm_id": 473,
+      "coingecko_id": "quantus",
+      "url": "stratum+ssl://qtc-ru.kryptex.network:8049",
+      "api_port": 12001,
+      "pool_fee": 0.03,
+      "preset": {
+        "plimit": 250,
+        "coffset": 0,
+        "moffset": 0
+      },
+      "measured": {
+        "normal": {
+          "hashrate": 489976298.7,
+          "power_w": 229.8
+        },
+        "max": {
+          "hashrate": 489976298.7,
+          "power_w": 229.8
+        },
+        "quiet": {
+          "hashrate": 489976298.7,
+          "power_w": 229.8
+        }
+      }
+    }
+  },
+  "switch": {
+    "mode": "normal",
+    "sample_seconds": 300,
+    "decide_seconds": 1800,
+    "window_minutes": 60,
+    "min_gain_pct": 20,
+    "noise_sigma": 1.5,
+    "min_dwell_minutes": 120,
+    "quarantine_minutes": 30,
+    "volatile_price_pct": 5,
+    "volatile_min_gain_pct": 30,
+    "electricity_usd_per_kwh": 0.026
+  },
+  "xmrig": {
+    "url": "xmr-ru.kryptex.network:8029",
+    "user": "krx-ВАШ-ЛОГИН/rig1"
+  },
+  "presets": {
+    "normal": {
+      "plimit": 250,
+      "coffset": 0,
+      "moffset": 0,
+      "measured": "Pearl 109.3 TH/s, 180 Вт, 66.5C, кулер 56%, 607 GH/Вт; автокулер на 250 Вт доходит до 79%, на 175 Вт — 59-60%"
+    },
+    "max": {
+      "plimit": 250,
+      "coffset": 0,
+      "moffset": 1500,
+      "measured": "Pearl 122.0 TH/s, 250 Вт, 75C, кулер 78%, 488 GH/Вт"
+    },
+    "quiet": {
+      "plimit": 175,
+      "coffset": 0,
+      "moffset": 1500,
+      "measured": "Pearl 96.7 TH/s, 175 Вт, 66.7C, кулер 55% (жёстко, --gpu-fan), 552 GH/Вт; ночной режим: обороты < 60% без потери хешрейта",
+      "fan": 55
+    },
+    "game": {
+      "gpu": false,
+      "cpu_threads": 4,
+      "measured": "GPU стоп, проц XMRig 4 потока приоритет 1"
+    }
+  },
+  "app": {
+    "gpu": {
+      "max_temp": 75.0,
+      "max_fan": 60.0,
+      "night": false,
+      "autostart": false,
+      "coin": "auto",
+      "plimit": 240
+    },
+    "cpu": {
+      "max_temp": 85,
+      "threads": 6,
+      "autostart": false,
+      "allow_100": false
+    },
+    "autostart_app": false,
+    "electricity_rub_per_kwh": 2.1,
+    "balance": {
+      "url": "",
+      "token": "",
+      "json_path": "",
+      "headers": {},
+      "coin": "prl"
+    },
+    "auto": {
+      "last_switch": 1793711996.7350354
+    },
+    "system": {
+      "close_extra": false,
+      "monitors_off": false,
+      "idle_balance_s": 180,
+      "idle_gui_s": 300,
+      "monitor_off_s": 300,
+      "tray_on_min": false,
+      "tray_on_close": false
+    }
+  }
+}

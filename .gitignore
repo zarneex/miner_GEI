@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Локальная память проекта и черновики
+AGENTS.md
+CLAUDE.md
+notes/
+tmp_research/
+
+# Данные и журналы приложения (живут в MINER_ROOT, но на всякий случай)
+data/
+logs/
+*.log
+config.json
+
+# Локальные артефакты
+*.bak
+*.bak-*
+*.tmp
+tmp-*.png
