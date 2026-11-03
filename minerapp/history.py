@@ -26,12 +26,45 @@ def _month_path(ts: float) -> Path:
     return HIST / time.strftime("%Y-%m.csv", time.localtime(ts))
 
 
+def _ensure_header(path: Path) -> None:
+    """Дописывает новые колонки в заголовок существующего месяца.
+
+    Файл за текущий месяц уже создан со старым набором полей; если просто писать
+    строки с лишним значением, DictReader положит его в ключ `None` и доход
+    второго ПК потеряется до смены месяца. Поэтому один раз переписываем
+    заголовок, строки оставляем как есть (недостающие значения читаются как 0).
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            first = f.readline().strip()
+    except OSError:
+        return
+    if not first or "cpu_remote_usd" in first:
+        return
+    tmp = path.with_suffix(".csv.tmp")
+    try:
+        with open(path, encoding="utf-8", newline="") as src, \
+                open(tmp, "w", encoding="utf-8", newline="") as dst:
+            src.readline()
+            dst.write(",".join(FIELDS) + "\n")
+            for line in src:
+                dst.write(line)
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def append(ts: float, coin: str, power_w: float, temp_c: float | None, fan: float | None,
            hashrate: float | None, usd: float, kwh: float, cpu_usd: float = 0.0,
            cpu_remote_usd: float = 0.0) -> None:
     HIST.mkdir(parents=True, exist_ok=True)
     path = _month_path(ts)
     new = not path.exists()
+    if not new:
+        _ensure_header(path)
     with open(path, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         if new:
