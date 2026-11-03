@@ -701,7 +701,7 @@ class MainWindow(QMainWindow):
         lay.addLayout(top, 0, 0, 1, 2)
 
         self.spin_threads = NoWheelSpin()
-        self.spin_threads.setRange(2, 16)
+        self.spin_threads.setRange(2, paths.CPU_TOTAL_THREADS)
         self.spin_threads.setSingleStep(1)
         self.spin_threads.setValue(int(self.app_cfg["cpu"].get("threads", 8)))
         lay.addWidget(QLabel("Потоков"), 1, 0)

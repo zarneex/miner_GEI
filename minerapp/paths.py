@@ -29,7 +29,9 @@ PL_MIN = 175
 PL_MAX = 250
 PL_STEP = 10
 
-CPU_TOTAL_THREADS = 16
+# логические процессоры этой машины: от них считается маска старших ядер и
+# верхняя граница «Потоков» (на 9800X3D/7800X3D — 16)
+CPU_TOTAL_THREADS = os.cpu_count() or 16
 
 
 def ensure_engine_path() -> None:
