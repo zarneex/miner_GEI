@@ -66,13 +66,23 @@ def _run(args: list[str]) -> _Result:
 
 
 def _parse_setting(block: str) -> int | None:
-    """Текущее значение «от сети» из вывода powercfg /query (RU и EN)."""
+    """Текущее значение «от сети» из вывода powercfg /query (RU и EN).
+
+    Подписи локализованы, а под SSH кириллица иногда теряется в `????` — поэтому
+    кроме текстовых шаблонов есть разбор по порядку: после GUID идут «возможное /
+    минимум / максимум / текущее от сети / текущее от батареи», текущее AC — 4-е
+    hex-значение. Порядок одинаков во всех языках.
+    """
     for pat in (r"от сети:\s*0x([0-9a-fA-F]+)",
                 r"AC Power Setting Index:\s*0x([0-9a-fA-F]+)"):
         import re
         m = re.search(pat, block)
         if m:
             return int(m.group(1), 16)
+    import re
+    vals = re.findall(r"0x([0-9a-fA-F]{1,8})", block)
+    if len(vals) >= 4:
+        return int(vals[3], 16)
     return None
 
 
@@ -448,6 +458,12 @@ class ThermalGovernor:
     def start(self, initial: int | None = None) -> None:
         self.restore_backup()
         cur = read_scheme()
+        if cur["min"] is None or cur["max"] is None:
+            # Не знаем исходных значений — не имеем права менять схему: иначе
+            # после остановки вернуть будет нечего (так было на втором ПК).
+            self.active = False
+            self._log("схема питания не прочитана — гувернатор не включаю")
+            return
         self._orig = {"min": cur["min"], "max": cur["max"]}
         self._orig_scheme = cur["guid"]
         self._backup()

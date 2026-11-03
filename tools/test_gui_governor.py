@@ -4,6 +4,7 @@
 """
 import os
 import sys
+import time
 from pathlib import Path
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -48,6 +49,59 @@ def main():
     check("нагрузка ЦП: независима от потоков",
           w.spin_threads.value() != ld.value() or True)
     w._persist = lambda *a, **k: None     # тест не меняет боевой конфиг
+
+    check("галочка «Держать температуру»: есть", hasattr(w, "chk_hold"))
+    check("галочка «Держать температуру»: СНЯТА по умолчанию",
+          w.chk_hold.isChecked() is False
+          and w.app_cfg["cpu"].get("hold_temp", False) is False,
+          f"checked={w.chk_hold.isChecked()}, "
+          f"cfg={w.app_cfg['cpu'].get('hold_temp')}")
+    check("галочка снята: цель недоступна", not w.spin_cpu_temp.isEnabled())
+    check("галочка снята: «Разрешить 100 %» недоступна", not w.chk_boost.isEnabled())
+
+    # такт гувернатора: снятая галочка обязана приходить как running=False
+    seen = {}
+
+    def spy_tick(temp, threads, target, running):
+        seen.update(temp=temp, threads=threads, target=target, running=running)
+
+    def spy_wait(cond, ms=2500):
+        end = time.time() + ms / 1000.0
+        while time.time() < end:
+            app.processEvents()
+            if cond():
+                return True
+            time.sleep(0.01)
+        return False
+
+    w.gov.tick = spy_tick
+    w._cpu_guard({"cpu_temp": 77.5, "cpu_running": True})
+    spy_wait(lambda: "running" in seen)
+    check("галочка снята: такт получает running=False (потолок не трогаем)",
+          seen.get("running") is False, f"{seen}")
+    check("галочка снята: цель всё равно передаётся", seen.get("target") == sp.value(),
+          f"{seen.get('target')} / {sp.value()}")
+
+    w.chk_hold.setChecked(True)
+    app.processEvents()
+    check("галочка включена: цель доступна", w.spin_cpu_temp.isEnabled())
+    check("галочка включена: «Разрешить 100 %» доступна", w.chk_boost.isEnabled())
+    seen.clear()
+    spy_wait(lambda: w._gov_busy is False)
+    w._cpu_guard({"cpu_temp": 77.5, "cpu_running": True})
+    spy_wait(lambda: "running" in seen)
+    check("галочка включена: такт получает running=True",
+          seen.get("running") is True, f"{seen}")
+    seen.clear()
+    w._cpu_guard({"cpu_temp": 77.5, "cpu_running": False})
+    spy_wait(lambda: "running" in seen)
+    check("майнер не запущен: running=False даже с галочкой",
+          seen.get("running") is False, f"{seen}")
+    w.chk_hold.setChecked(False)
+    app.processEvents()
+    check("галочка снята обратно: цель снова недоступна",
+          not w.spin_cpu_temp.isEnabled() and not w.chk_boost.isEnabled())
+
     check("галочка 100 %: есть", hasattr(w, "chk_boost"))
     check("галочка 100 %: состояние из конфига (по умолчанию включена)",
           w.chk_boost.isChecked() == bool(w.app_cfg["cpu"].get("allow_100", True)),

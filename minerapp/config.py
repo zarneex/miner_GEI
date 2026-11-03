@@ -13,7 +13,17 @@ from .paths import CFG, LOGS
 DEFAULTS_APP = {
     "gpu": {"max_temp": 80, "max_fan": 80, "night": False, "autostart": True,
             "coin": "pearl"},
-    "cpu": {"max_temp": 85.0, "threads": 8, "autostart": False, "allow_100": True},
+    # hold_temp — ВЫКЛЮЧЕН по умолчанию: пока галочка снята, приложение не трогает
+    # схему питания и не режет частоту, процессор работает как обычно.
+    "cpu": {"max_temp": 85.0, "threads": 8, "autostart": False, "allow_100": True,
+            "hold_temp": False},
+    # Второй ПК (персональный модуль). По умолчанию ВЫКЛЮЧЕН: у остальных
+    # пользователей секция «Процессор» выглядит как раньше, сеть не трогается.
+    # Включается только в личном config.json (host/python/script — свои).
+    "cpu_remote": {"enabled": False, "host": "pc2", "python": "python", "script": "",
+                   "label": "PC2", "threads": 8, "threads_max": 32, "load": 100,
+                   "autostart": False, "hold_temp": False,
+                   "max_temp": 80.0, "allow_100": True},
     "autostart_app": False,
     "electricity_rub_per_kwh": 2.10,
     # ВНИМАНИЕ: close_extra — крайне нестабильная функция (cleanup.Cleaner):

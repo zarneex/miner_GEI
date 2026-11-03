@@ -147,11 +147,53 @@ def test_hot_ceiling_persists():
           f"pct={pct_before}, hot={hot_before}")
 
 
+def test_hold_off_releases_scheme():
+    """Галочка «Держать температуру» снята: tick(running=False) отпускает схему
+    питания и больше не трогает потолок частоты.
+
+    ВАЖНО: все такты идут, пока `powercfg` подменён (patch живёт до finish) —
+    иначе tick(running=True) дёрнул бы настоящую схему питания Windows.
+    """
+    tmp, rig, gov, msgs, patches, temp = run(lambda p: 40 + 0.5 * p, 70.0, 300)
+    active_before = gov.active
+    rig.clock += 15
+    gov.tick(temp, 14, 70.0, False)          # галочку сняли
+    restored = dict(rig.cur)
+    active_after = gov.active
+    n_calls = len(rig.calls)
+    for _ in range(24):                      # ещё 2 минуты без галочки
+        rig.clock += 5
+        gov.tick(temp, 14, 70.0, False)
+    n_calls_later = len(rig.calls)
+
+    # галочку вернули — под патчами, до finish()
+    rig.clock += 15
+    gov.tick(temp, 14, 70.0, True)
+    calls_back = len(rig.calls)
+    active_back = gov.active
+    applied = rig.cur["max"]
+    pct_after = gov.pct
+    finish(tmp, rig, gov, patches)
+    check("галочка снята: до этого гувернатор был активен", active_before is True,
+          f"active={active_before}")
+    check("галочка снята: схема питания возвращена сразу", restored == rig.orig,
+          f"{restored}")
+    check("галочка снята: гувернатор выключился", not active_after)
+    check("галочка снята: потолок больше не меняется", n_calls_later == n_calls,
+          f"вызовов {n_calls} → {n_calls_later}")
+    check("галочка возвращена: гувернатор снова активен", active_back is True)
+    check("галочка возвращена: потолок снова применён", calls_back > n_calls_later,
+          f"{n_calls_later} → {calls_back}: {[c[1] for c in rig.calls]}")
+    check("галочка возвращена: применён именно потолок гувернатора",
+          applied == pct_after, f"схема {applied} %, gov.pct {pct_after} %")
+
+
 if __name__ == "__main__":
     test_reaches_target()
     test_model_and_jump()
     test_unreachable()
     test_no_oscillation()
     test_hot_ceiling_persists()
+    test_hold_off_releases_scheme()
     print("\n" + ("ВСЁ ПРОШЛО" if not FAILS else f"ПРОВАЛЫ: {FAILS}"))
     sys.exit(1 if FAILS else 0)

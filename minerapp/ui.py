@@ -32,6 +32,7 @@ from . import governor as govmod
 from . import gpu_guard
 from . import lhm as lhmmod
 from . import owner as ownermod
+from . import remote_cpu as remotecpu
 from .metrics import SessionMetrics
 
 NIGHT_PL = 175          # минимальный лимит карты, Вт (замерено: кулер 59-60%)
@@ -687,7 +688,32 @@ class MainWindow(QMainWindow):
 
     def _build_cpu(self) -> QGroupBox:
         g = QGroupBox("Процессор")
-        lay = QGridLayout(g)
+        rc = self.app_cfg.get("cpu_remote") or {}
+        self.cpu_tabs = None
+        self.remote_cpu = None
+        if not rc.get("enabled"):
+            lay = QGridLayout(g)
+            self._build_cpu_local(lay)
+            return g
+        # Второй ПК — вкладкой ВНУТРИ секции «Процессор»: окно не становится
+        # шире, а локальная карточка остаётся ровно такой же, как была.
+        outer = QVBoxLayout(g)
+        outer.setContentsMargins(0, 0, 0, 0)
+        page = QWidget()
+        local = QGridLayout(page)
+        local.setContentsMargins(6, 6, 6, 6)
+        self._build_cpu_local(local)
+        self.cpu_tabs = QTabWidget()
+        self.cpu_tabs.setDocumentMode(True)
+        self.cpu_tabs.addTab(page, "Этот ПК")
+        self.remote_cpu = remotecpu.RemoteCpuPanel(rc, self._persist_remote, parent=self)
+        self.remote_cpu.log_line.connect(self.console_line)
+        self.cpu_tabs.addTab(self.remote_cpu, str(rc.get("label") or "PC2"))
+        outer.addWidget(self.cpu_tabs)
+        return g
+
+    def _build_cpu_local(self, lay: QGridLayout) -> None:
+        """Локальная карточка CPU — ровно та же, что была до появления второго ПК."""
         lay.setHorizontalSpacing(10)
         lay.setVerticalSpacing(6)
 
@@ -721,6 +747,16 @@ class MainWindow(QMainWindow):
         lay.addWidget(QLabel("Нагрузка ЦП"), 2, 0)
         lay.addWidget(self.spin_load, 2, 1)
 
+        self.chk_hold = QCheckBox("Держать температуру")
+        self.chk_hold.setToolTip(
+            "ВЫКЛЮЧЕНО по умолчанию: приложение не трогает схему питания и не режет\n"
+            "частоту — процессор работает как обычно (полный PBO, до 90 °C).\n"
+            "Включите, если хотите, чтобы термогувернатор держал цель справа:\n"
+            "он опускает потолок частоты (PROCTHROTTLEMAX) и поднимает его обратно,\n"
+            "когда есть запас по температуре. Рычаг один — частота; потоки и доля\n"
+            "нагрузки температуру не держат (замерено).")
+        lay.addWidget(self.chk_hold, 3, 0)
+
         self.spin_cpu_temp = NoWheelDoubleSpin()
         self.spin_cpu_temp.setRange(60.0, 90.0)
         self.spin_cpu_temp.setSingleStep(2.5)
@@ -729,19 +765,20 @@ class MainWindow(QMainWindow):
         self.spin_cpu_temp.setSuffix(" °C")
         self.spin_cpu_temp.setToolTip(
             "Температура, которую держит термогувернатор, пока крутится XMRig.\n"
+            "Действует только при включённой галочке «Держать температуру».\n"
             "Рычаг — потолок частоты (PROCTHROTTLEMAX) до 99 %: 99 % = 4.6 ГГц / 76 °C,\n"
             "100 % = 5.2 ГГц PBO / 90.5 °C, промежуточных значений Windows не даёт.\n"
             "Поэтому цель 80–85 °C на этом CPU не берётся без BIOS — гувернатор\n"
             "честно держит 99 % и пишет об этом. Потоки температуру не держат.\n"
             "При остановке майнера схема питания возвращается как была.")
-        lay.addWidget(QLabel("Держать температуру"), 3, 0)
         lay.addWidget(self.spin_cpu_temp, 3, 1)
 
         self.chk_boost = QCheckBox("Разрешить 100 % (полный PBO)")
         self.chk_boost.setToolTip(
+            "Работает только при включённой галочке «Держать температуру».\n"
             "99 % — это 4.6 ГГц и 76 °C, 100 % — 5.2 ГГц и 90.5 °C: между ними\n"
             "Windows не даёт промежуточных значений (ступенька PBO).\n"
-            "Галочка ВКЛЮЧЕНА по умолчанию: со снятой приложение режет потолок\n"
+            "Галочка ВКЛЮЧЕНА по умолчанию: со снятой гувернатор режет потолок\n"
             "частоты до 99 % и меняет схему питания — это ломает обычное поведение\n"
             "ПК. Снимите осознанно, если 90 °C на процессоре недопустимы:\n"
             "100 % стоит +40 Вт за +0–5 % хешрейта.")
@@ -754,8 +791,7 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color:#6c7681;font-size:10px;")
         lay.addWidget(self.lbl_cpu, 5, 0, 1, 2)
         lay.addWidget(hint, 6, 0, 1, 2)
-        g.setLayout(lay)
-        return g
+
 
     def _build_metrics(self) -> QVBoxLayout:
         """Две строки карточек; подробности живут в подсказках, чтобы не занимать экран."""
@@ -882,6 +918,11 @@ class MainWindow(QMainWindow):
         # 99 % и схема питания ПК перестаёт быть «как обычно» (см. _build_cpu).
         self.chk_boost.setChecked(bool(self.app_cfg["cpu"].get("allow_100", True)))
         self.chk_boost.toggled.connect(self.on_allow_100)
+        # «Держать температуру» ВЫКЛЮЧЕНО по умолчанию: пока снята — потолок частоты
+        # не трогаем вовсе, гувернатор только читает температуру.
+        self.chk_hold.setChecked(bool(self.app_cfg["cpu"].get("hold_temp", False)))
+        self.chk_hold.toggled.connect(self.on_hold_temp)
+        self._sync_hold_ui()          # цель и «100 %» активны только при галочке
         # «Закрыть всё лишнее» заблокировано (см. _build_system_row): старое
         # «включено» из конфига гасим, чтобы уборка не поднялась сама
         self.chk_close_extra.blockSignals(True)
@@ -1027,6 +1068,9 @@ class MainWindow(QMainWindow):
             cfgmod.save(cfg)
         except (OSError, KeyError, ValueError) as e:
             self.console.put(f"настройки не сохранились ({section}.{key}): {e}")
+
+    def _persist_remote(self, key: str, value) -> None:
+        self._persist("cpu_remote", key, value)
 
     # --- запуск/остановка --------------------------------------------------
     def _active_coin(self) -> str:
@@ -1259,6 +1303,30 @@ class MainWindow(QMainWindow):
         self._persist("cpu", "allow_100", bool(on))
         self.gov.set_allow_100(bool(on))
         self.console.put(f"CPU: 100 % {'разрешён' if on else 'запрещён (потолок 99 %)'}")
+
+    def _sync_hold_ui(self) -> None:
+        """Цель и «Разрешить 100 %» имеют смысл только при включённой галочке."""
+        on = self.chk_hold.isChecked()
+        self.spin_cpu_temp.setEnabled(on)
+        self.chk_boost.setEnabled(on)
+
+    def on_hold_temp(self, on: bool) -> None:
+        """Галочка «Держать температуру»: включает/выключает термогувернатор.
+
+        Снятая — никакого искусственного потолка частоты: такт гувернатора
+        получает `running=False`, а здесь мы сразу возвращаем схему питания,
+        которую он сохранил при старте (иначе потолок висел бы до стопа майнера).
+        """
+        self._persist("cpu", "hold_temp", bool(on))
+        self._sync_hold_ui()
+        if on:
+            self.console.put(f"CPU: держу {self.spin_cpu_temp.value():.1f} °C — "
+                             "потолок частоты включится при работающем майнере")
+            return
+        self.console.put("CPU: температуру не держу — потолок частоты не трогаю")
+        if getattr(self, "gov", None) is not None and self.gov.active:
+            with self._gov_lock:      # такт в фоне не должен пересечься
+                self.gov.stop()
 
     def on_cpu_target_changed(self, value: float) -> None:
         """Цель гувернатора поменяли: сохраняем и сразу пересчитываем потолок."""
@@ -1794,8 +1862,12 @@ class MainWindow(QMainWindow):
         if self._shutdown_started or self._gov_busy:
             return
         self._gov_busy = True
+        # Галочка «Держать температуру» — главный выключатель: снята → running=False,
+        # гувернатор гасится и возвращает исходную схему питания, потолок частоты
+        # никто не трогает (никакого «искусственного тренинга»).
+        holding = bool(d.get("cpu_running")) and self.chk_hold.isChecked()
         args = (d.get("cpu_temp"), self._cpu_threads_now(),
-                float(self.spin_cpu_temp.value()), bool(d.get("cpu_running")))
+                float(self.spin_cpu_temp.value()), holding)
 
         def job() -> None:
             try:
@@ -1933,6 +2005,8 @@ class MainWindow(QMainWindow):
                 chk.setChecked(True)
             else:
                 self.console.put(f"{name}: автозапуск раздела выключен")
+        if self.remote_cpu is not None:
+            self.remote_cpu.autostart_if_needed()
 
     def on_autostart_app(self, on: bool) -> None:
         ok, msg = set_autostart(on)
@@ -2085,7 +2159,8 @@ class MainWindow(QMainWindow):
             return
         self._shutdown_started = True
         self._shutdown_force = force
-        self._shutdown_had_mining = self.krig.is_running() or self.cpu.is_running()
+        self._shutdown_had_mining = (self.krig.is_running() or self.cpu.is_running()
+                                     or bool(self.remote_cpu and self.remote_cpu.running))
         self.btn_stop_close.setEnabled(False)
         self.btn_stop_close.setText("Останавливаю…")
         self.lbl_shutdown.setText("останавливаю майнинг…")
@@ -2144,6 +2219,11 @@ class MainWindow(QMainWindow):
             # процессы уже погашены фоном: здесь только состояние QProcess и хвосты
             self.krig.settle_stop(quiet=True)
             self.cpu.settle_stop(quiet=True)
+            if self.remote_cpu is not None:
+                try:
+                    self.remote_cpu.shutdown()   # агент сам погасит XMRig и вернёт схему
+                except Exception as e:           # noqa: BLE001 — выйти обязаны
+                    self.console.put(f"PC2: не закрылся — {e}")
             self.lhm.stop()
             # автотест не должен трогать железо живого майнинга: в тестах политика кулера,
             # клоки и лимит мощности остаются как есть (иначе прогон тестов роняет карту)
